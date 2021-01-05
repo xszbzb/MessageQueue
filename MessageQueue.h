@@ -6,7 +6,7 @@
 
 #include "Semaphore.h"
 
-//Ïß³Ìºê
+//çº¿ç¨‹å®
 #ifdef _WIN32
 #define pthread_t HANDLE
 #define pthread_create(pntid, NULL, thread_func, param) \
@@ -40,23 +40,23 @@ public:
 
 	struct CSharedMemoryHead
 	{
-		unsigned int size;
+		unsigned int size; 
 		unsigned int head;
 		unsigned int tail;
 		unsigned int read;
 		unsigned int write;
-		unsigned int reserved[2]; //Ô¤Áô
+		unsigned int reserved[2]; //é¢„ç•™
 		CMessageHead data[];
 	};
 
 	CMessageQueue(const unsigned int key = 897654321, const unsigned int queueSize = 0x100, const unsigned int accessPermission = 0666);
 	virtual ~CMessageQueue();
-	//²ÎÊý:ÒªÐ´ÈëÏûÏ¢¶ÓÁÐµÄÊý¾ÝºÍ³¤¶È
-	//³É¹¦·µ»Ø>0,Ê§°Ü·µ»Ø<0,==0´ú±íÒì²½Ê±,¶ÓÁÐÂúÁË²»ÄÜÔÙÐ´Èë
+	//å‚æ•°:è¦å†™å…¥æ¶ˆæ¯é˜Ÿåˆ—çš„æ•°æ®å’Œé•¿åº¦
+	//æˆåŠŸè¿”å›ž>0,å¤±è´¥è¿”å›ž<0,==0ä»£è¡¨å¼‚æ­¥æ—¶,é˜Ÿåˆ—æ»¡äº†ä¸èƒ½å†å†™å…¥
 	virtual int Write(const void* buf, unsigned int len);
-	//buf:½ÓÊÕÊý¾ÝÖ¸Õë
-	//len:¿É½ÓÊÕµÄ×î´óÊý¾Ý³¤¶È
-	//³É¹¦·µ»Ø¶ÁÈ¡Êý¾Ý³¤¶È>0,Ê§°Ü·µ»ØÐ¡ÓÚ0,==0´ú±íÒì²½Ê±,¶ÓÁÐÖÐÎÞÊý¾Ý¿É¶Á
+	//buf:æŽ¥æ”¶æ•°æ®æŒ‡é’ˆ
+	//len:å¯æŽ¥æ”¶çš„æœ€å¤§æ•°æ®é•¿åº¦
+	//æˆåŠŸè¿”å›žè¯»å–æ•°æ®é•¿åº¦>0,å¤±è´¥è¿”å›žå°äºŽ0,==0ä»£è¡¨å¼‚æ­¥æ—¶,é˜Ÿåˆ—ä¸­æ— æ•°æ®å¯è¯»
 	virtual int Read(void* const buf, unsigned int len);
 	virtual void Clear();
 	virtual E_MODE_BLOCK SetMode(E_MODE_BLOCK mode);
@@ -69,14 +69,16 @@ private:
 	unsigned int m_key;
 	CSemaphore m_semRead;
 	CSemaphore m_semWrite;
-	CSharedMemoryHead* m_pBase;//·ÖÅäµÄ¹²ÏíÄÚ´æµÄÔ­Ê¼Ê×µØÖ·
+	CSemaphore m_semWaitRead;//é˜Ÿåˆ—å†™æ»¡æ—¶ç­‰å¾…è¯»å–æ¶ˆæ¯
+	CSemaphore m_semWaitWrite;//é˜Ÿåˆ—ä¸ºç©ºæ—¶ç­‰å¾…å†™å…¥æ–°æ¶ˆæ¯
+	CSharedMemoryHead* m_pBase;//åˆ†é…çš„å…±äº«å†…å­˜çš„åŽŸå§‹é¦–åœ°å€
 	unsigned int m_queueSize;
 	E_MODE_BLOCK m_modeBlock;
 };
 
 
-inline CMessageQueue::CMessageQueue(const unsigned int key, const unsigned int queueSize, const unsigned int accessPermission) :m_key(key * 10),
-m_semRead(++m_key), m_semWrite(++m_key)
+inline CMessageQueue::CMessageQueue(const unsigned int key, const unsigned int queueSize, const unsigned int accessPermission):m_key(key*10),
+m_semRead(++m_key), m_semWrite(++m_key), m_semWaitRead(++m_key), m_semWaitWrite(++m_key)
 {
 	m_modeBlock = BLOCK;
 	m_queueSize = queueSize;
@@ -120,13 +122,17 @@ inline int CMessageQueue::Write(const void* buf, unsigned int len)
 		LOG_ERROR("Message length error, len=%u, Max length=%u\r\n", len, MAX_MESSAGE_SIZE);
 		return -1;
 	}
-
+	
 	int iRet = 0;
 	if (WAIT_OBJECT_0 == (iRet = m_semWrite.Wait()))
 	{
 		while (!IsWrite())
 		{
-			Sleep(1);
+			if (WAIT_OBJECT_0 != (iRet = m_semWaitRead.Wait()))
+			{
+				LOG_ERROR("Semaphore error: error=%u\r\n", iRet);
+				return -1;
+			}
 		}
 	}
 	else
@@ -151,6 +157,7 @@ inline int CMessageQueue::Write(const void* buf, unsigned int len)
 #endif
 
 	m_pBase->head < m_queueSize - 1 ? m_pBase->head++ : m_pBase->head = 0;
+	m_semWaitWrite.Post();
 	m_semWrite.Post();
 	return len;
 }
@@ -170,7 +177,11 @@ inline int CMessageQueue::Read(void* const buf, unsigned int len)
 	{
 		while (!IsRead())
 		{
-			Sleep(1);
+			if (WAIT_OBJECT_0 != (iRet = m_semWaitWrite.Wait()))
+			{
+				LOG_ERROR("Semaphore error: error=%u\r\n", iRet);
+				return -1;
+			}
 		}
 	}
 	else
@@ -202,6 +213,7 @@ inline int CMessageQueue::Read(void* const buf, unsigned int len)
 #endif
 
 	m_pBase->tail < m_queueSize - 1 ? m_pBase->tail++ : m_pBase->tail = 0;
+	m_semWaitRead.Post();
 	m_semRead.Post();
 	return len;
 }
@@ -210,6 +222,7 @@ inline void CMessageQueue::Clear()
 {
 	m_semRead.Wait();
 	m_pBase->tail = m_pBase->head;
+	m_semWaitRead.Post();
 	m_semRead.Post();
 }
 
